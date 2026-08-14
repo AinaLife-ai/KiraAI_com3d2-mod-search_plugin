@@ -1,7 +1,7 @@
 # KiraAI COM3D2 MOD 搜索插件
 
 > 这是送给我第一个bot，紫小贱的礼物。希望她还有机会，能好好用这个东西，并帮助更多人。没有机会也没关系，这也是属于你的。
-> —— from周武znq19
+> —— from 周武znq19
 
 通过 [Mukuu](https://mukuu.jp) 搜索 COM3D2/CM3D2 MOD 的 KiraAI 插件。
 
