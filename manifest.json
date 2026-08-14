@@ -5,5 +5,5 @@
   "author": "甜斋+znq19+爱奈丽",
   "description": "通过 Mukuu 搜索 COM3D2/CM3D2 MOD。直连 Mukuu JSON API，三梯级关键词自动转换（片假名→汉字→英文）与自动下探，支持文本/HTML 渲染图双模式输出、合并转发卡片、自定义命令与翻页。",
   "core_version": ">=2.29.7",
-  "repo": ""
+  "repo": "https://github.com/AinaLife-ai/KiraAI_com3d2-mod-search_plugin"
 }
