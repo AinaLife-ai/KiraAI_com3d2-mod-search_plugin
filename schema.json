@@ -1,0 +1,72 @@
+{
+  "section_main": {
+    "type": "section",
+    "name": "基本设置",
+    "collapsed": false,
+    "fields": {
+      "enabled": {
+        "type": "switch",
+        "name": "启用插件",
+        "default": true,
+        "hint": "关闭后工具与命令全部不生效"
+      },
+      "enable_llm_tool": {
+        "type": "switch",
+        "name": "启用 LLM 工具",
+        "default": true,
+        "hint": "是否注册 search_com3d2_mods 工具给 LLM 调用，与命令开关独立"
+      },
+      "enable_command": {
+        "type": "switch",
+        "name": "启用命令",
+        "default": false,
+        "hint": "是否响应下方配置的触发命令，与 LLM 工具开关独立，默认关"
+      },
+      "commands": {
+        "type": "list",
+        "name": "触发命令",
+        "default": ["/com3d2"],
+        "hint": "每行一个命令，消息以命令前缀开头即触发，不限于斜杠式"
+      },
+      "send_as_forward": {
+        "type": "switch",
+        "name": "合并转发卡片",
+        "default": true,
+        "hint": "开启后渲染图/文本结果与链接清单合并成一条转发卡片发出，关闭则逐条直发"
+      },
+      "mode": {
+        "type": "enum",
+        "name": "输出模式",
+        "options": ["image", "text", "both"],
+        "default": "image",
+        "hint": "image=渲染图+链接清单（默认）/ text=纯文本 / both=渲染图+完整文本"
+      },
+      "translate": {
+        "type": "switch",
+        "name": "保留中文翻译",
+        "default": true,
+        "hint": "开启时 LLM 会将每条日文描述翻译成中文"
+      },
+      "per_page": {
+        "type": "integer",
+        "name": "每页条数",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 20,
+        "hint": "一次搜索返回的 MOD 条数"
+      },
+      "cache_ttl": {
+        "type": "integer",
+        "name": "缓存秒数",
+        "default": 60,
+        "hint": "相同关键词与翻页的查询结果缓存时间，0=不缓存"
+      },
+      "search_timeout": {
+        "type": "integer",
+        "name": "请求超时秒数",
+        "default": 20,
+        "hint": "Mukuu API 请求超时（Heroku 免费实例冷启动可能 5~10s）"
+      }
+    }
+  }
+}
