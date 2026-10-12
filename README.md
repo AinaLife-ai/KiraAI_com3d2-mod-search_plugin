@@ -140,7 +140,7 @@ C3D_LIVE=1 python tests/run_tests.py   # 额外跑一次真实 Mukuu 搜索
 - 🔧 发送入口改用 `ctx.send_message_chain`（3.0 规范入口；`message_processor` 在 3.0 只是兼容转发层）；
   `terminate` 收尾常驻 HTTP 客户端/浏览器与后台检测任务。
 - 🏷️ manifest 补 `tags`；schema 的 `enum` 改为 `string` + `options`；工具参数用 JSON-Schema 的 `enum`。
-- 🎨 新增插件图标 `icon.png`（512×512，由原图压缩到约 40 KB），manifest 声明 `icon`。
+- 🎨 新增插件图标 `icon.png`（原图 1024×1024 **等比缩放**到 512×512、调色板 PNG 约 82 KB，未裁切），manifest 声明 `icon`。
 - 🧪 新增 `tests/` 离线测试目录：真加载器无关、零第三方依赖（没有 httpx 会注入最小假实现）、
   默认不联网；`python tests/run_tests.py` 直接跑，也兼容 `python -m pytest tests`。
   联网实测用 `C3D_LIVE=1`，指定真框架用 `KIRA_CORE=/path/to/core`。
