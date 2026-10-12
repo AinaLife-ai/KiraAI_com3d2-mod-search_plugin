@@ -318,9 +318,8 @@ class Com3d2ModSearchPlugin(BasePlugin):
             elif interactive:
                 # 命令路径：用户直接触发、插件是唯一应答方，给一条极简提示（避免"没反应"）
                 await self._send(sid, MessageChain([Text(f"没找到「{keyword}」")]))
-            else:
-                # 工具路径（默认）：不机械投递，把"没找到"交给 AI 用自己的口吻说
-                note += "。插件没有直接发送提示，请你用自己的人格口吻告诉用户没有搜到"
+            # 工具路径（默认）：不机械投递，note 保持原有写法（只陈述"未找到结果"），
+            # 由 AI 自己决定怎么跟用户说 —— 不加额外指令，避免越俎代庖。
             return json.dumps({"keyword": keyword, "total": 0, "items": [], "note": note}, ensure_ascii=False)
 
         sent_desc = await self._send_results(sid, mode, keyword, total, sort, items, self_id=self_id)
