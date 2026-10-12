@@ -11,6 +11,9 @@ from __future__ import annotations
 import json
 import re
 import time
+
+# 链接结尾可能粘上中英标点（推文里最常见的是中文句号/顿号/括号等）
+_TRAILING_PUNCT = ".,;:!?\"'’”。，、；：！？…）】》」』>»"
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -29,7 +32,7 @@ def extract_download_links(text: str) -> List[str]:
         return []
     out = []
     for u in _URL_RE.findall(text):
-        u = u.rstrip(".,;:")
+        u = u.strip().rstrip(_TRAILING_PUNCT)      # 别把后随标点吃进链接里
         if any(d in u for d in ACCEPTED_DOMAINS) and u not in out:
             out.append(u)
     return out
@@ -41,7 +44,18 @@ class MukuuClient:
     def __init__(self, timeout: float = 10.0, cache_ttl: int = 300):
         self.timeout = timeout
         self.cache_ttl = cache_ttl
-        self._cache: Dict[Tuple[str, int, str], Tuple[float, Any]] = {}
+        # 缓存键含 limit：否则先 count=20 再 count=5 会拿到 20 条（旧实现漏了 limit）
+        self._cache: Dict[Tuple[str, int, str, int], Tuple[float, Any]] = {}
+        self._client: Optional[httpx.AsyncClient] = None      # 常驻客户端（连接复用）
+
+    async def aclose(self):
+        """关闭常驻客户端（插件 terminate 时调用；可重入）。"""
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
     # ---------- 公开方法 ----------
 
@@ -54,7 +68,7 @@ class MukuuClient:
         limit: int = 5,
     ) -> List[dict]:
         """搜索并返回解析后的帖子列表（原始 dict）。"""
-        key = (word, skip, sort)
+        key = (word, skip, sort, limit)
         cached = self._get_cache(key)
         if cached is not None:
             return cached
@@ -90,17 +104,35 @@ class MukuuClient:
 
     # ---------- 内部 ----------
 
-    async def _post(self, path: str, payload: dict) -> Any:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                API_BASE + path,
-                json=payload,
-                headers={"Accept": "application/json", "User-Agent": "KiraAI-com3d2-search/0.1"},
+    def _ensure_client(self) -> httpx.AsyncClient:
+        """常驻客户端：复用连接（省 TLS 握手），超时随配置；失效时自动重建。"""
+        client = self._client
+        if client is None or getattr(client, "is_closed", False):
+            client = httpx.AsyncClient(
+                timeout=self.timeout,
+                headers={"Accept": "application/json",
+                         "User-Agent": "KiraAI-com3d2-search/0.1"},
             )
-            resp.raise_for_status()
-            return resp.json()
+            self._client = client
+        return client
 
-    def _get_cache(self, key: Tuple[str, int, str]):
+    async def _post(self, path: str, payload: dict) -> Any:
+        client = self._ensure_client()
+        try:
+            resp = await client.post(API_BASE + path, json=payload)
+        except Exception:
+            # 连接池坏了（对端断开等）⇒ 重建一次再试，仍失败则上抛
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            self._client = None
+            client = self._ensure_client()
+            resp = await client.post(API_BASE + path, json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _get_cache(self, key: Tuple[str, int, str, int]):
         if self.cache_ttl <= 0:
             return None
         hit = self._cache.get(key)
@@ -112,7 +144,7 @@ class MukuuClient:
             return None
         return val
 
-    def _set_cache(self, key: Tuple[str, int, str], val):
+    def _set_cache(self, key: Tuple[str, int, str, int], val):
         if self.cache_ttl <= 0:
             return
         # 简单防膨胀：超过 64 条清空

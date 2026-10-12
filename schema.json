@@ -35,7 +35,7 @@
         "hint": "开启后渲染图/文本结果与链接清单合并成一条转发卡片发出，关闭则逐条直发"
       },
       "mode": {
-        "type": "enum",
+        "type": "string",
         "name": "输出模式",
         "options": ["image", "text", "both"],
         "default": "image",
@@ -66,6 +66,12 @@
         "name": "请求超时秒数",
         "default": 20,
         "hint": "Mukuu API 请求超时（Heroku 免费实例冷启动可能 5~10s）"
+      },
+      "notify_empty": {
+        "type": "switch",
+        "name": "搜不到时直接提示",
+        "default": false,
+        "hint": "关（默认）：搜不到时不发机械提示——LLM 工具调用由 AI 用自己的口吻告诉用户没搜到；命令路径仍会回一条极简「没找到」（命令是用户直接触发，插件是唯一应答方）。开：恢复旧行为，插件直接发一条含尝试关键词的提示"
       }
     }
   }
