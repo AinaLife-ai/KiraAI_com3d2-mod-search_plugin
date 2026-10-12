@@ -88,6 +88,16 @@ AI 会自动调用 `search_com3d2_mods` 工具：
 - LLM 工具返回结构化 JSON（author / screen / date / fav / rt / ja / dl / tw），供 AI 翻译与展示
 - **搜不到时**：默认由 AI 用自己的口吻告诉用户（插件不插话）；想恢复「插件直接发提示」就把 `notify_empty` 打开
 
+## 测试
+
+```bash
+python tests/run_tests.py              # 离线用例（无需 pytest / playwright / 网络）
+python -m pytest tests -q              # 装了 pytest 也可以
+C3D_LIVE=1 python tests/run_tests.py   # 额外跑一次真实 Mukuu 搜索
+```
+
+测试自带最小框架桩：没有真 KiraAI core 也能跑；装了真框架时可用 `KIRA_CORE=/path/to/kira/core` 指给它。
+
 ## 背景图
 
 `assets/bg.jpg` 为渲染图顶部的人物背景，可自行替换（建议 1920x1080 左右的横图）。背景图的显示位置在 `main.py` 的 `_build_html` 中调整。
@@ -130,6 +140,10 @@ AI 会自动调用 `search_com3d2_mods` 工具：
 - 🔧 发送入口改用 `ctx.send_message_chain`（3.0 规范入口；`message_processor` 在 3.0 只是兼容转发层）；
   `terminate` 收尾常驻 HTTP 客户端/浏览器与后台检测任务。
 - 🏷️ manifest 补 `tags`；schema 的 `enum` 改为 `string` + `options`；工具参数用 JSON-Schema 的 `enum`。
+- 🎨 新增插件图标 `icon.png`（512×512，由原图压缩到约 40 KB），manifest 声明 `icon`。
+- 🧪 新增 `tests/` 离线测试目录：真加载器无关、零第三方依赖（没有 httpx 会注入最小假实现）、
+  默认不联网；`python tests/run_tests.py` 直接跑，也兼容 `python -m pytest tests`。
+  联网实测用 `C3D_LIVE=1`，指定真框架用 `KIRA_CORE=/path/to/core`。
 
 </details>
 

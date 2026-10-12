@@ -11,6 +11,9 @@ from __future__ import annotations
 import json
 import re
 import time
+
+# 链接结尾可能粘上中英标点（推文里最常见的是中文句号/顿号/括号等）
+_TRAILING_PUNCT = ".,;:!?\"'’”。，、；：！？…）】》」』>»"
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -29,7 +32,7 @@ def extract_download_links(text: str) -> List[str]:
         return []
     out = []
     for u in _URL_RE.findall(text):
-        u = u.rstrip(".,;:")
+        u = u.strip().rstrip(_TRAILING_PUNCT)      # 别把后随标点吃进链接里
         if any(d in u for d in ACCEPTED_DOMAINS) and u not in out:
             out.append(u)
     return out
