@@ -70,6 +70,9 @@ class Com3d2ModSearchPlugin(BasePlugin):
         self.per_page = int(sec.get("per_page", 10))
         self.cache_ttl = int(sec.get("cache_ttl", 60))
         self.timeout = float(sec.get("search_timeout", 20))
+        # 搜不到时是否由插件**直接**发一条机械提示。默认关：把"没找到"交给 AI 用自己的口吻说
+        # （命令路径例外：命令是用户直接触发、插件是唯一应答方，仍会回一条极简提示，避免"没反应"）
+        self.notify_empty = bool(sec.get("notify_empty", False))
         self.output_dir: Optional[Path] = None
         self._client: Optional[MukuuClient] = None
         self._browser = BrowserManager()
@@ -80,19 +83,32 @@ class Com3d2ModSearchPlugin(BasePlugin):
 
     async def initialize(self):
         self.output_dir = self.ctx.get_plugin_data_dir() / "output"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self.output_dir.mkdir, parents=True, exist_ok=True)
         self._client = MukuuClient(timeout=self.timeout, cache_ttl=self.cache_ttl)
-        # 浏览器后台检测，不阻塞加载
-        asyncio.ensure_future(self._browser.initialize())
+        # 浏览器后台检测（保留句柄，terminate 时可收尾）
+        self._browser_task = asyncio.ensure_future(self._browser.initialize())
         logger.info(
-            f"[com3d2-search] COM3D2 MOD 搜索插件加载完成 v1.0.0 "
+            f"[com3d2-search] COM3D2 MOD 搜索插件加载完成 v1.0.1 "
             f"(llm_tool={self.enable_llm_tool} cmd={self.enable_command} cmds={self.commands} "
-            f"forward={self.send_as_forward})"
+            f"forward={self.send_as_forward} mode={self.mode} notify_empty={self.notify_empty})"
         )
 
     async def terminate(self):
-        # BrowserManager 无持久连接；MukuuClient 每次请求独立 client，无需关闭
-        pass
+        """收尾：关常驻 httpx 客户端与常驻浏览器、清理后台检测任务（可重入）。"""
+        task, self._browser_task = getattr(self, "_browser_task", None), None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            if self._client is not None:
+                await self._client.aclose()
+        except Exception as e:
+            logger.warning(f"[com3d2-search] 关闭 HTTP 客户端失败: {e}")
+        # 渲染用的浏览器由 render_html 每次「开 → 截图 → 关」，无常驻实例需要收尾
+        # （这样常驻内存不涨：仅在渲染的那一两秒里占用，符合手机/小内存环境的取向）
 
     # ==================== LLM 工具 ====================
 
@@ -115,15 +131,14 @@ class Com3d2ModSearchPlugin(BasePlugin):
                 },
                 "sort": {
                     "type": "string",
+                    "enum": SORTS,
                     "description": "排序方式",
-                    "options": SORTS,
                     "default": "createdAtDesc",
                 },
                 "mode": {
                     "type": "string",
+                    "enum": ["", "image", "text", "both"],
                     "description": "输出模式覆盖：空=跟随配置，image=渲染图+链接清单，text=纯文本，both=渲染图+完整文本",
-                    "options": ["", "image", "text", "both"],
-                    "default": "",
                 },
                 "count": {
                     "type": "integer",
@@ -214,11 +229,15 @@ class Com3d2ModSearchPlugin(BasePlugin):
             if not nav:
                 await self._send(sid, MessageChain([Text("还没有搜索记录，先搜索关键词吧")]))
                 return
-            skip = nav["skip"] + self.per_page
+            # nav["skip"] 存的**已经是下一页的偏移量**（工具路径就是直接拿它当 force_skip 用的），
+            # 旧实现这里又加了 per_page ⇒ 每次「更多」都会跳过一整页；同时改用上次实际条数，
+            # 避免与工具路径传不同 count 时步长错位。
+            step = int(nav.get("limit") or self.per_page)
+            skip = int(nav.get("skip", 0))
             await self._search_and_show(
                 sid, nav["word"], sort=nav.get("sort", "createdAtDesc"),
                 mode=self.mode, update_nav=True, force_skip=skip,
-                self_id=self_id,
+                self_id=self_id, limit=step, interactive=True,
             )
             return
         if low in ("重置", "reset", "清空"):
@@ -234,7 +253,8 @@ class Com3d2ModSearchPlugin(BasePlugin):
         if not kw:
             await self._send(sid, MessageChain([Text(self._help_text())]))
             return
-        await self._search_and_show(sid, kw, sort="createdAtDesc", mode=mode, update_nav=True, self_id=self_id)
+        await self._search_and_show(sid, kw, sort="createdAtDesc", mode=mode, update_nav=True,
+                                    self_id=self_id, interactive=True)
 
     # ==================== 核心搜索 ====================
 
@@ -281,17 +301,26 @@ class Com3d2ModSearchPlugin(BasePlugin):
     async def _search_and_show(
         self, sid: str, keyword: str, sort: str = "createdAtDesc", mode: str = "image",
         update_nav: bool = False, force_skip: Optional[int] = None, self_id: str = "",
-        limit: Optional[int] = None,
+        limit: Optional[int] = None, interactive: bool = False,
     ) -> str:
         limit = limit or self.per_page
         skip = force_skip if force_skip is not None else (self._nav.get(sid, {}).get("skip", 0) if not update_nav else 0)
         items, total, used, queries = await self._do_search(keyword, skip, sort, limit)
         if update_nav:
-            self._nav[sid] = {"word": keyword, "skip": skip + limit, "sort": sort}
+            self._nav[sid] = {"word": keyword, "skip": skip + limit, "sort": sort, "limit": limit}
 
         if not items:
-            note = "未找到结果" if not used else f"未找到结果（尝试：{'、'.join(q for q, _, _ in used)}）"
-            await self._send(sid, MessageChain([Text(f"🔍「{keyword}」{note}")]))
+            tried = "、".join(q for q, _, _ in used)
+            note = f"未找到结果（尝试：{tried}）" if tried else "未找到结果"
+            if self.notify_empty:
+                # 旧行为：插件直接发一条机械提示（含尝试过的关键词梯级）
+                await self._send(sid, MessageChain([Text(f"🔍「{keyword}」{note}")]))
+            elif interactive:
+                # 命令路径：用户直接触发、插件是唯一应答方，给一条极简提示（避免"没反应"）
+                await self._send(sid, MessageChain([Text(f"没找到「{keyword}」")]))
+            else:
+                # 工具路径（默认）：不机械投递，把"没找到"交给 AI 用自己的口吻说
+                note += "。插件没有直接发送提示，请你用自己的人格口吻告诉用户没有搜到"
             return json.dumps({"keyword": keyword, "total": 0, "items": [], "note": note}, ensure_ascii=False)
 
         sent_desc = await self._send_results(sid, mode, keyword, total, sort, items, self_id=self_id)
@@ -419,9 +448,10 @@ font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;font-size:1
         if self.send_as_forward:
             nodes = []
             if png:
-                nodes.append(self._node_image(png))
+                nodes.append(self._node_image(png, sid))
             nodes.append(self._node_text(
-                self._build_link_list(items) if mode == "image" else self._format_text(keyword, total, items)
+                self._build_link_list(items) if mode == "image" else self._format_text(keyword, total, items),
+                sid,
             ))
             try:
                 await self._send_forward(sid, nodes, self_id=self_id)
@@ -441,48 +471,91 @@ font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;font-size:1
         await self._send(sid, MessageChain([Text(self._format_text(keyword, total, items))]))
         return "渲染图+完整文本已发送" if png else "渲染失败已降级文本"
 
+    KEEP_PNGS = 30                     # 渲染图保留份数（超出的删最旧，避免磁盘无限涨）
+
     async def _render_png(self, keyword: str, total: int, sort: str, items: List[dict]) -> Path:
         html = self._build_html(keyword, total, sort, items)
         ts = int(time.time() * 1000)
         png = self.output_dir / f"search_{ts}.png"
         await render_html(html, str(png), self._browser)
+        await asyncio.to_thread(self._prune_pngs)
         return png
+
+    def _prune_pngs(self):
+        try:
+            files = sorted(self.output_dir.glob("search_*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in files[self.KEEP_PNGS:]:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # ---- 合并转发 ----
 
-    def _node_image(self, path: Path) -> dict:
+    def _node_image(self, path: Path, sid: str = "") -> dict:
         return {
             "type": "node",
             "data": {
-                "name": self._bot_nick(),
-                "uin": self._self_id(),
+                "name": self._bot_nick(sid),
+                "uin": self._self_id(sid),
                 "content": [{"type": "image", "data": {"file": str(Path(path).resolve())}}],
             },
         }
 
-    def _node_text(self, text: str) -> dict:
+    def _node_text(self, text: str, sid: str = "") -> dict:
         return {
             "type": "node",
             "data": {
-                "name": self._bot_nick(),
-                "uin": self._self_id(),
+                "name": self._bot_nick(sid),
+                "uin": self._self_id(sid),
                 "content": [{"type": "text", "data": {"text": text}}],
             },
         }
 
-    def _bot_nick(self) -> str:
+    @staticmethod
+    def _adapter_cfg(adapter, key: str) -> str:
+        """从适配器配置里取字段（两代都是 adapter.config 这个 dict；没有则回退属性直读）。"""
         try:
-            adapter = self.ctx.adapter_mgr.get_adapter("qq")
-            return getattr(getattr(adapter, "info", None), "name", None) or "COM3D2搜索"
+            cfg = getattr(adapter, "config", None)
+            if hasattr(cfg, "get"):
+                val = cfg.get(key)
+                if val:
+                    return str(val)
         except Exception:
-            return "COM3D2搜索"
-
-    def _self_id(self) -> str:
+            pass
         try:
-            adapter = self.ctx.adapter_mgr.get_adapter("qq")
-            return str(getattr(adapter, "self_id", "") or getattr(adapter, "account", "") or "")
+            return str(getattr(adapter, key, "") or "")
         except Exception:
             return ""
+
+    def _bot_nick(self, sid: str = "") -> str:
+        """转发卡片上的昵称：优先适配器配置里的机器人昵称/self_id，最后才用适配器名。"""
+        adapter = self._adapter_for(sid)
+        for key in ("nickname", "name", "self_id"):
+            val = self._adapter_cfg(adapter, key)
+            if val:
+                return val
+        return getattr(getattr(adapter, "info", None), "name", None) or "COM3D2搜索"
+
+    def _self_id(self, sid: str = "") -> str:
+        """机器人自身账号：从适配器配置的 self_id 读（此前读的属性两代都不存在 ⇒ 恒为空）。"""
+        return self._adapter_cfg(self._adapter_for(sid), "self_id")
+
+    def _adapter_for(self, sid: str = ""):
+        """按 sid 前缀取适配器，取不到再退 qq。"""
+        try:
+            if sid and ":" in sid:
+                adapter = self.ctx.adapter_mgr.get_adapter(sid.split(":", 1)[0])
+                if adapter is not None:
+                    return adapter
+        except Exception:
+            pass
+        try:
+            return self.ctx.adapter_mgr.get_adapter("qq")
+        except Exception:
+            return None
 
     async def _send_forward(self, sid: str, nodes: List[dict], self_id: str = ""):
         """通过适配器发送合并转发卡片（OneBot send_forward_msg）。"""
@@ -500,7 +573,7 @@ font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;font-size:1
 
         for node in nodes:
             if not node["data"].get("uin"):
-                node["data"]["uin"] = self_id or self._self_id()
+                node["data"]["uin"] = self_id or self._self_id(sid)
 
         if session_type == "gm":
             await client.send_action("send_forward_msg", {
@@ -514,4 +587,5 @@ font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;font-size:1
             })
 
     async def _send(self, sid: str, chain: MessageChain):
-        await self.ctx.message_processor.send_message_chain(sid, chain)
+        """统一发送入口：走 PluginContext（3.0 的规范入口，两代都有）。"""
+        await self.ctx.send_message_chain(sid, chain)
