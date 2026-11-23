@@ -50,6 +50,16 @@ def _esc(s) -> str:
     return html_mod.escape(str(s or ""), quote=False)
 
 
+def _supports_timeout(fn) -> bool:
+    """客户端 send_action 是否接受 timeout 关键字（老核心没有这个形参）。"""
+    try:
+        import inspect
+
+        return "timeout" in inspect.signature(fn).parameters
+    except Exception:
+        return False
+
+
 class Com3d2ModSearchPlugin(BasePlugin):
     def __init__(self, ctx, cfg: dict):
         super().__init__(ctx, cfg)
@@ -70,6 +80,8 @@ class Com3d2ModSearchPlugin(BasePlugin):
         self.per_page = int(sec.get("per_page", 10))
         self.cache_ttl = int(sec.get("cache_ttl", 60))
         self.timeout = float(sec.get("search_timeout", 20))
+        # 合并转发等待回包秒数（NapCat 默认 10s，转发要打包上传渲染图，常不够）
+        self._fwd_timeout = float(sec.get("forward_timeout", 60) or 0)
         # 搜不到时是否由插件**直接**发一条机械提示。默认关：把"没找到"交给 AI 用自己的口吻说
         # （命令路径例外：命令是用户直接触发、插件是唯一应答方，仍会回一条极简提示，避免"没反应"）
         self.notify_empty = bool(sec.get("notify_empty", False))
@@ -574,16 +586,13 @@ font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;font-size:1
             if not node["data"].get("uin"):
                 node["data"]["uin"] = self_id or self._self_id(sid)
 
-        if session_type == "gm":
-            await client.send_action("send_forward_msg", {
-                "group_id": int(target_id),
-                "messages": nodes,
-            })
-        else:
-            await client.send_action("send_forward_msg", {
-                "user_id": int(target_id),
-                "messages": nodes,
-            })
+        params = {"group_id": int(target_id)} if session_type == "gm" else {"user_id": int(target_id)}
+        params["messages"] = nodes
+
+        kw = {}
+        if self._fwd_timeout > 0 and _supports_timeout(client.send_action):
+            kw["timeout"] = self._fwd_timeout
+        await client.send_action("send_forward_msg", params, **kw)
 
     async def _send(self, sid: str, chain: MessageChain):
         """统一发送入口：走 PluginContext（3.0 的规范入口，两代都有）。"""

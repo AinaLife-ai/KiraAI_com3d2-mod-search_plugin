@@ -409,6 +409,103 @@ def test_static_wiring():
     assert "asyncio.to_thread" in src, "磁盘操作应放线程池"
 
 
+# ─────────────────── 合并转发：可配置超时 + 超时降级 ───────────────────
+
+def _fwd_client(mode: str):
+    """假客户端：mode = ok / timeout / failed。记录 (action, timeout)。"""
+    calls = []
+
+    class _Client:
+        async def send_action(self, action, payload, timeout=10.0):
+            calls.append((action, timeout))
+            if mode == "timeout":
+                raise asyncio.TimeoutError(f"请求 {action} 超时")
+            if mode == "failed":
+                raise ConnectionError("NapCat WebSocket 未连接")
+            return {"status": "ok", "retcode": 0, "data": {"message_id": 1}}
+
+    return _Client(), calls
+
+
+def _mk(td, name, client, **kw):
+    ctx = B.StubCtx(Path(td) / name)
+    ctx.adapter_mgr.get_adapter("qq").client = client
+    inst = B.make_plugin(MOD, ctx, mode="text", **kw)
+    asyncio.run(inst.initialize())
+    return inst, ctx
+
+
+def _send(inst):
+    return asyncio.run(inst._send_results("qq:gm:100", "text", "kw", 2, "createdAtDesc",
+                                          B.synthetic_items(2), self_id="10001"))
+
+
+def test_forward_ok_single_call():
+    """正常路径：只调一次转发，带 60s，不直发。"""
+    with tempfile.TemporaryDirectory() as td:
+        client, calls = _fwd_client("ok")
+        inst, ctx = _mk(td, "a", client)
+        desc = _send(inst)
+        assert calls == [("send_forward_msg", 60.0)], f"应只调一次且带 60s，实得 {calls}"
+        assert "合并转发" in desc, f"成功应报合并转发，实得 {desc!r}"
+        assert ctx.sender.texts() == [], "成功路径不应再直发"
+
+
+def test_forward_timeout_falls_back():
+    """★ 超时 ⇒ 降级直发（按用户要求：宁可不吞消息）。"""
+    with tempfile.TemporaryDirectory() as td:
+        client, calls = _fwd_client("timeout")
+        inst, ctx = _mk(td, "b", client)
+        _send(inst)
+        assert len(calls) == 1, f"超时后不应重试转发，实得 {calls}"
+        assert len(ctx.sender.texts()) == 1, \
+            f"超时后应降级直发一条，实得 {ctx.sender.texts()}"
+
+
+def test_forward_failed_falls_back():
+    """明确故障（连接断开）⇒ 同样降级直发。"""
+    with tempfile.TemporaryDirectory() as td:
+        client, calls = _fwd_client("failed")
+        inst, ctx = _mk(td, "c", client)
+        _send(inst)
+        assert len(calls) == 1, f"不应重试，实得 {calls}"
+        assert len(ctx.sender.texts()) == 1, f"应降级直发一条，实得 {ctx.sender.texts()}"
+
+
+def test_forward_timeout_configurable():
+    """forward_timeout 可配置：0 = 不传（用框架默认）；非 0 = 显式传入。"""
+    with tempfile.TemporaryDirectory() as td:
+        client, calls = _fwd_client("ok")
+        inst, _ = _mk(td, "d", client, forward_timeout=25)
+        _send(inst)
+        assert calls == [("send_forward_msg", 25.0)], f"应传入配置的 25s，实得 {calls}"
+
+    with tempfile.TemporaryDirectory() as td:
+        client, calls = _fwd_client("ok")
+        inst, _ = _mk(td, "e", client, forward_timeout=0)
+        _send(inst)
+        assert calls == [("send_forward_msg", 10.0)], \
+            f"0 应不传 timeout（框架默认 10s），实得 {calls}"
+
+
+def test_forward_old_core_fallback():
+    """老核心 send_action 无 timeout 形参 ⇒ 不传 timeout，照常发出。"""
+    with tempfile.TemporaryDirectory() as td:
+        calls = []
+
+        class _OldClient:
+            async def send_action(self, action, payload):
+                calls.append(action)
+                return {"status": "ok", "retcode": 0}
+
+        ctx = B.StubCtx(Path(td))
+        ctx.adapter_mgr.get_adapter("qq").client = _OldClient()
+        inst = B.make_plugin(MOD, ctx, mode="text")
+        asyncio.run(inst.initialize())
+        _send(inst)
+        assert calls == ["send_forward_msg"], f"老核心应照常发出，实得 {calls}"
+
+
 # ────────────────────────────── 联网（可选） ──────────────────────────────
 
 def test_live_search_opt_in():
